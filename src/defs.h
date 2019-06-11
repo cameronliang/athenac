@@ -20,7 +20,7 @@
  *  (user modified via configure) */
 
 /* Version identifier when configure was last run */
-#define CONFIGURE_DATE "Sun Jun  9 11:19:03 CDT 2019"
+#define CONFIGURE_DATE "Thu Jan 17 09:25:55 PST 2019"
 
 /* Problem generator with which Athena is compiled */
 #define A_PROBLEM "cloud-3dtang"
@@ -51,9 +51,6 @@
 /* Particles */
 #define NO_PARTICLES
 #define NO_FEEDBACK
-
-/* implicit cooling */
-#define NO_COOLING
 
 /* resistivity, viscosity, and thermal conduction */
 #define NO_RESISTIVITY
@@ -87,7 +84,7 @@
 #define NO_WRITE_GHOST_CELLS
 
 /* MPI parallelism: MPI_PARALLEL or NO_MPI_PARALLEL */
-#define MPI_PARALLEL
+#define NO_MPI_PARALLEL
 
 /* H-correction: H_CORRECTION or NO_H_CORRECTION */
 #define NO_H_CORRECTION
@@ -147,7 +144,6 @@ enum {
 #endif
 #define SIGN(a) ( ((a) < 0.) ? -1. : 1. )
 #define SQR(x) ( (x)*(x) )
-#define CUBE(x) ( (x)*(x)*(x) )
 #define STR(x) #x
 #define SQRT2 1.4142135623730951
 #define ONE_OVER_SQRT2 0.7071067811865475

@@ -33,7 +33,7 @@ ifeq (NO_FFT,FFT_ENABLED)
   FFTWINC = -I/usr/include
 endif
 
-ifeq (MPI_PARALLEL,MPI_PARALLEL)
+ifeq (NO_MPI_PARALLEL,MPI_PARALLEL)
   CC = mpicc 
   LDR = mpicc 
 endif
@@ -54,19 +54,6 @@ ifeq ($(MACHINE),ophir)
   OPT = -O3 -xW -ipo -i-static
   FFTWLIB = -L/scr1/lemaster/fftw-3.1.2/lib -lfftw3
   FFTWINC = -I/scr1/lemaster/fftw-3.1.2/include
-else
-ifeq ($(MACHINE),antares)
-  CC  = icc
-  LDR = icc
-ifeq (MPI_PARALLEL,MPI_PARALLEL)
-  CC  = /usr/peyton/openmpi/bin/mpicc
-  LDR  = /usr/peyton/openmpi/bin/mpicc
-endif
-  OPT = -O3 -g
-  MPIINC = -I/usr/peyton/openmpi/include
-  MPILIB = -L/usr/peyton/openmpi/lib -lmpi
-  FFTWLIB = -L/usr/local/fftw/gcc/3.3.3/lib64 -lfftw3
-  FFTWINC = -I/usr/local/fftw/gcc/3.3.3/include
 else
 ifeq ($(MACHINE),peyton-mpi)
   CC  = /usr/peyton/openmpi/bin/mpicc
@@ -108,6 +95,10 @@ ifeq ($(MACHINE),macosx)
   OPT = -O3 
   FFTWLIB = -L/opt/local/lib -lfftw3
   FFTWINC = -I/opt/local/include
+ifeq ($(MACHINE),santana)
+  CC = clang
+  LDR = clang
+  OPT = -g
 else
   abort Unsupported MACHINE=$(MACHINE)
 endif
@@ -119,7 +110,7 @@ endif
 endif
 endif
 
-ifeq (MPI_PARALLEL,NO_MPI_PARALLEL)
+ifeq (NO_MPI_PARALLEL,NO_MPI_PARALLEL)
   MPIINC = 
   MPILIB = 
 endif

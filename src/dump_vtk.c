@@ -1,13 +1,13 @@
 #include "copyright.h"
 /*============================================================================*/
-/*! \file dump_vtk.c 
+/*! \file dump_vtk.c
  *  \brief Function to write a dump in VTK "legacy" format.
  *
  * PURPOSE: Function to write a dump in VTK "legacy" format.  With SMR,
  *   dumps are made for all levels and domains, unless nlevel and ndomain are
  *   specified in <output> block.  Works for BOTH conserved and primitives.
  *
- * CONTAINS PUBLIC FUNCTIONS: 
+ * CONTAINS PUBLIC FUNCTIONS:
  * - dump_vtk() - writes VTK dump (all variables).			      */
 /*============================================================================*/
 
@@ -313,6 +313,29 @@ void dump_vtk(MeshS *pM, OutputS *pOut)
           }
         }
 #endif
+
+//#ifdef ENERGY_COOLING
+        // Make this quick n dirty --> Always output Erad
+        fprintf(pfile,"\nSCALARS Erad float\n");
+        fprintf(pfile,"LOOKUP_TABLE default\n");
+        for (k=kl; k<=ku; k++) {
+          for (j=jl; j<=ju; j++) {
+            for (i=il; i<=iu; i++) {
+              //if (strcmp(pOut->out,"cons") == 0){
+                data[i-il] = (float)pGrid->U[k][j][i].Erad;
+                /*} else if(strcmp(pOut->out,"prim") == 0) {
+                data[i-il] = (float)pGrid->U[k-kl][j-jl][i-il].Erad;
+               
+              }
+                */
+                //pGrid->U[k][j][i].Erad = 0; // set to zero --> cumulative measure
+            }
+            if(!big_end) ath_bswap(data,sizeof(float),iu-il+1);
+            fwrite(data,sizeof(float),(size_t)ndata0,pfile);
+          }
+        }
+//#endif
+
 
 /* close file and free memory */
 

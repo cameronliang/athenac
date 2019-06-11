@@ -2,13 +2,11 @@
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
-#include <assert.h>
 #include <stdlib.h>
 #include "defs.h"
 #include "athena.h"
 #include "globals.h"
 #include "prototypes.h"
-#include "prob/expand_domain.h"
 
 #include "prob/math_functions.h"
 
@@ -24,15 +22,18 @@
 #include "particles/particle.h"
 #endif
 
-#define FOLLOW_CLOUD         // Moving reference frame
-#define REPORT_NANS          // Verbose
-#define ENERGY_COOLING       // Cooling
-//#define FLOW_PROFILE       // Uncomment this line for changing v(r), rho(r),...
-//#define EXPAND_DOMAIN        // Expand domain while moving out
-//#define INSTANTCOOL
-#define ENERGY_HEATING 0    // 0 = no heating, 1 = heat what cooled, 2 = constant heating
+#define FOLLOW_CLOUD
+#define REPORT_NANS
+#define ENERGY_COOLING
+//#define FLOW_PROFILE   // Uncomment this line for changing v(r), rho(r),...
+//#define ENERGY_HEATING // Uncomment this line for heating
+/* #define INSTANTCOOL */
 static void bc_ix1(GridS *pGrid);
 static void bc_ox1(GridS *pGrid);
+//static void bc_ix2(GridS *pGrid);
+//static void bc_ox2(GridS *pGrid);
+//static void bc_ix3(GridS *pGrid);
+//static void bc_ox3(GridS *pGrid);
 
 static void check_div_b(GridS *pGrid);
 
@@ -51,12 +52,11 @@ Real3Vect get_e2(Real theta, Real phi);
 Real3Vect get_e3(Real theta, Real phi);
 
 /* custom hst quantities */
-static Real hst_m13(const GridS *pG, const int i, const int j, const int k);
-static Real hst_m110(const GridS *pG, const int i, const int j, const int k);
-static Real hst_mT2(const GridS *pG, const int i, const int j, const int k);
-static Real hst_Mx13(const GridS *pG, const int i, const int j, const int k);
+static Real hst_m13(GridS *pG, int i, int j, int k);
+static Real hst_m110(GridS *pG, int i, int j, int k);
+static Real hst_Mx13(GridS *pG, int i, int j, int k);
 
-static Real hst_Erad(const GridS *pG, const int i, const int j, const int k);
+static Real hst_Erad(GridS *pG, int i, int j, int k);
 
 
 /* dye-weighted hst quantities */
@@ -111,40 +111,36 @@ static int nan_dump_count;
 /* global definitions for the SD cooling curve using the
    Townsend (2009) exact integration scheme */
 
-//#include "prob/cooling_data/SD93_Z1.h"
-//#include "prob/cooling_data/denstest.h"
-#include "prob/cooling_data/WSS09_z0_Z1.h"
-
+#include "prob/cooling_data/SD93_Z1.h"
 //#include "prob/cooling_data/SD93_Z1_S10.h"
 //#include "prob/cooling_data/WSS09_n1_Z1.h"
 //#include "prob/cooling_data/WSS09_CIE_Z1.h"
 
-static Real Yk[nfit_cool_d][nfit_cool_T];
+static Real Yk[nfit_cool];
 /* -- end piecewise power-law fit */
+
 
 /* must call init_cooling() in both problem() and read_restart() */
 static void init_cooling();
 static void test_cooling();
 
-static Real sdLambda(const Real d, const Real T);
+static Real sdLambda(const Real T);
 static Real tcool(const Real d, const Real T);
 
-static Real Y(const Real T, const int id);
-static Real Yinv(const Real Y1, const int id);
+static Real Y(const Real T);
+static Real Yinv(const Real Y1);
 
 static Real newtemp_townsend(const Real d, const Real T, const Real dt_hydro);
 
 static void integrate_cooling(GridS *pG);
-#if ENERGY_HEATING == 1
+#ifdef ENERGY_HEATING
 static void radiate_energy(MeshS *pM);
 #endif
-static Real dens_conv;
 #endif  /* ENERGY_COOLING */
 
 #ifdef INSTANTCOOL
 static Real instant_cool(const Real rho, const Real P, const Real dt);
 static int after_cool(MeshS *pM, DomainS *pDomain, int fix);
-static Real hst_xshift(const GridS *pG, const int i, const int j, const int k);
 #endif  /* INSTANTCOOL */
 
 #ifdef FOLLOW_CLOUD
@@ -152,16 +148,9 @@ static Real cloud_mass_weighted_velocity(MeshS *pM);
 static void boost_frame(DomainS *pDomain, Real dv);
 static Real x_shift;
 
-static Real hst_xshift(const GridS *pG, const int i, const int j, const int k);
-static Real hst_vflow(const GridS *pG, const int i, const int j, const int k);
+static Real hst_xshift(GridS *pG, int i, int j, int k);
+static Real hst_vflow(GridS *pG, int i, int j, int k);
 #endif
-#ifdef EXPAND_DOMAIN
-static void expand_domain(DomainS *pDomain, Real scale);
-static Real r0;
-
-static Real hst_scalefac(const GridS *pG, const int i, const int j, const int k);
-#endif
-static Real scalefac = 1.0;
 
 static Real drat, vflow, vflow0, betain, betaout_y, betaout_z,dr,dp,tnotcool, r_cloud;
 
@@ -174,25 +163,12 @@ static Real nu_fun(const Real d, const Real T,
 static Real nu;
 #endif  /* VISCOSITY */
 
-#if ENERGY_HEATING == 2 // fixed heating
-static Real heating_rate;
-#endif /* ENERGY_HEATING == 2 */
-
 static Real dtmin;
 static Real pro(Real r, Real rcloud)
 {
   return (r/rcloud - log(cosh(r/rcloud))) / log(2);
 }
 
-
-static Real get_pressure(ConsS *u) {
-  Real E0 = 0.5 * (SQR(u->M1) + SQR(u->M2) + SQR(u->M3)) / u->d;
-#ifdef MHD
-  E0 += 0.5 * (SQR(u->B1c) + SQR(u->B2c) + SQR(u->B3c));
-#endif  /* MHD */
-
-  return (u->E - E0) * Gamma_1;
-}
 
 
 /*==============================================================================
@@ -233,14 +209,8 @@ void problem(DomainS *pDomain)
   vflow  = par_getd("problem", "vflow"); // TODO: change here for FLOW_PROFILE
 #endif
   vflow0 = vflow;
-  // vflow = 0; // Uncomment this for constantly outflowing (fully entrained) test
 #ifdef FOLLOW_CLOUD
   x_shift = 0.0;
-#endif
-
-#ifdef EXPAND_DOMAIN
-  scalefac = 1.0;
-  r0 = par_getd("problem", "r0");
 #endif
 
 #ifdef MHD
@@ -269,16 +239,10 @@ void problem(DomainS *pDomain)
   rhofloor = par_getd_def("problem", "rhofloor", 1.e-2);
   d_MIN = par_getd_def("problem", "d_MIN", 1.e-4);
   dtmin = par_getd_def("problem", "dtmin", 1.e-7);
-  dens_conv = par_getd_def("problem", "dens_conv", 1.0);
 
   dp = par_getd_def("problem", "dp", 0.0);
   tnotcool = par_getd_def("problem", "tnotcool", -1.0);
   tfloor_cooling = par_getd_def("problem", "tfloor_cooling", (Gamma_1 + dp) / drat);
-
-#if ENERGY_HEATING == 2 // fixed heating
-  heating_rate = par_getd("problem","heating");
-#endif /* ENERGY_HEATING == 2 */
-
 
 #ifdef VISCOSITY
   nu   = par_getd("problem","nu");
@@ -318,7 +282,6 @@ void problem(DomainS *pDomain)
 
   dump_history_enroll(hst_m13, "m13");
   dump_history_enroll(hst_m110, "m110");
-  dump_history_enroll(hst_mT2, "mT2");
   dump_history_enroll(hst_Mx13, "Mx13");
 
   dump_history_enroll(hst_Erad, "Erad");
@@ -326,10 +289,6 @@ void problem(DomainS *pDomain)
 #ifdef FOLLOW_CLOUD
   dump_history_enroll_alt(hst_xshift, "x_shift");
   dump_history_enroll_alt(hst_vflow,  "v_flow");
-#endif
-
-#ifdef EXPAND_DOMAIN
-  dump_history_enroll_alt(hst_scalefac,  "scalefac");
 #endif
 
 #if (NSCALARS > 0)
@@ -518,8 +477,7 @@ void problem(DomainS *pDomain)
         pGrid->U[k][j][i].Erad = 0;
 #endif
 
-        /* printf("1337 %g %g %g %g %g %g\n", x1, pGrid->U[k][j][i].d, (Gamma_1 + dp) / rho, */
-        /*        vx, vy, vz);  */
+        /* printf("1337 %g %g %g %g %g\n", x1, pGrid->U[k][j][i].d, vx, vy, vz); */
 
 
       }
@@ -763,8 +721,17 @@ void problem(DomainS *pDomain)
 
   if (pDomain->Disp[0] == 0)
     bvals_mhd_fun(pDomain, left_x1,  bc_ix1);
+  /* if (pDomain->Disp[1] == 0) */
+  /*   bvals_mhd_fun(pDomain, left_x2,  bc_ix2); */
+  /* if (pDomain->Disp[2] == 0) */
+  /*   bvals_mhd_fun(pDomain, left_x3,  bc_ix3); */
   if (pDomain->MaxX[0] == pDomain->RootMaxX[0])
     bvals_mhd_fun(pDomain, right_x1, bc_ox1);
+  /* if (pDomain->MaxX[1] == pDomain->RootMaxX[1]) */
+  /*   bvals_mhd_fun(pDomain, right_x2, bc_ox2); */
+  /* if (pDomain->MaxX[2] == pDomain->RootMaxX[2]) */
+  /*   bvals_mhd_fun(pDomain, right_x3, bc_ox3); */
+
 
   /* seed a perturbation */
    for (k=ks; k<=ke; k++) {
@@ -782,11 +749,6 @@ void problem(DomainS *pDomain)
 
 #ifdef PARTICLES
    init_particles(pDomain);
-#endif
-
-#if ENERGY_HEATING == 2
-   ath_pout(0, "Heating mode is enabled with rate %.5e (Lambda(rho_cl,T_cl) = %e).\n",
-            heating_rate, sdLambda(drat,(Gamma_1 + dp) / drat));
 #endif
 
   return;
@@ -812,9 +774,6 @@ void problem_write_restart(MeshS *pM, FILE *fp)
   fwrite(&x_shift, sizeof(Real), 1, fp);
   fwrite(&vflow,   sizeof(Real), 1, fp);
 #endif
-#ifdef EXPAND_DOMAIN
-  fwrite(&scalefac,   sizeof(Real), 1, fp);
-#endif
 
   return;
 }
@@ -827,8 +786,16 @@ void problem_read_restart(MeshS *pM, FILE *fp)
     for (nd=0; nd<(pM->DomainsPerLevel[nl]); nd++) {
       if (pM->Domain[nl][nd].Disp[0] == 0)
         bvals_mhd_fun(&(pM->Domain[nl][nd]), left_x1,  bc_ix1);
+       /* if (pM->Domain[nl][nd].Disp[1] == 0) */
+       /*   bvals_mhd_fun(&(pM->Domain[nl][nd]), left_x2,  bc_ix2); */
+       /* if (pM->Domain[nl][nd].Disp[2] == 0) */
+       /*   bvals_mhd_fun(&(pM->Domain[nl][nd]), left_x3,  bc_ix3); */
        if (pM->Domain[nl][nd].MaxX[0] == pM->Domain[nl][nd].RootMaxX[0])
          bvals_mhd_fun(&(pM->Domain[nl][nd]), right_x1, bc_ox1);
+       /* if (pM->Domain[nl][nd].MaxX[1] == pM->Domain[nl][nd].RootMaxX[1]) */
+       /*   bvals_mhd_fun(&(pM->Domain[nl][nd]), right_x2, bc_ox2); */
+       /* if (pM->Domain[nl][nd].MaxX[2] == pM->Domain[nl][nd].RootMaxX[2]) */
+       /*   bvals_mhd_fun(&(pM->Domain[nl][nd]), right_x3, bc_ox3); */
 
     }
   }
@@ -876,7 +843,6 @@ void problem_read_restart(MeshS *pM, FILE *fp)
   // Re-enroll hst dumps after restart
   dump_history_enroll(hst_m13, "m13");
   dump_history_enroll(hst_m110, "m110");
-  dump_history_enroll(hst_mT2, "mT2");
   dump_history_enroll(hst_Mx13, "Mx13");
 
   dump_history_enroll(hst_Erad, "Erad");
@@ -885,11 +851,6 @@ void problem_read_restart(MeshS *pM, FILE *fp)
 #ifdef FOLLOW_CLOUD
   dump_history_enroll_alt(hst_xshift, "x_shift");
   dump_history_enroll_alt(hst_vflow,  "v_flow");
-#endif
-
-#ifdef EXPAND_DOMAIN
-  dump_history_enroll_alt(hst_scalefac,  "scalefac");
-  r0 = par_getd("problem", "r0");
 #endif
 
 #if (NSCALARS > 0)
@@ -924,10 +885,6 @@ void problem_read_restart(MeshS *pM, FILE *fp)
   fread(&x_shift, sizeof(Real), 1, fp);
   fread(&vflow,   sizeof(Real), 1, fp);
 #endif
-#ifdef EXPAND_DOMAIN
-  fread(&scalefac,   sizeof(Real), 1, fp);
-#endif
-
 
   return;
 }
@@ -1091,16 +1048,10 @@ void Userwork_in_loop(MeshS *pM)
 #ifdef FOLLOW_CLOUD
   Real dvx, newdvx, expt;
 #endif
-#ifdef EXPAND_DOMAIN
-  Real new_scalefac;
-#endif
 
 
 #ifdef FOLLOW_CLOUD
   dvx = cloud_mass_weighted_velocity(pM);
-  // Artificial shift
-  //dvx = 4e-4 * MAX(0, (1 - (r0 + x_shift * x_shift) / (4 * r0))) + 1e-3 / (1 + x_shift) + MIN(1e-9 * x_shift * x_shift, 1e-3);
-
   if(fabs(dvx) > 100.01 || dvx < 0.0){ // TODO: some maximum shift is defined here...
     ath_pout(0,"[bad dvx:] %0.15e setting to 0.\n",dvx);
     dvx = 0.0;
@@ -1126,17 +1077,9 @@ void Userwork_in_loop(MeshS *pM)
     dvx = vflow;
   }
 #endif /* not FLOW_PROFILE */
-  ath_pout(0,"[dvx:]  %0.10e [vflow:] %.10e [xshift:] %.10e\n",dvx,vflow, x_shift);
+  ath_pout(0,"[dvx:]  %0.15e [vflow:] %.15e\n",dvx,vflow);
   vflow -= dvx;
 #endif /* FOLLOW_CLOUD */
-
-#ifdef EXPAND_DOMAIN
-  new_scalefac = (r0 + x_shift) / r0;
-  ath_pout(0,"[scalefac:] %0.10e [new:] %.10e [ratio - 1:] %.5e\n",
-           scalefac, new_scalefac, new_scalefac / scalefac - 1.);
-#endif
-
-
 
   for (nl=0; nl<=(pM->NLevels)-1; nl++) {
     for (nd=0; nd<=(pM->DomainsPerLevel[nl])-1; nd++) {
@@ -1144,17 +1087,9 @@ void Userwork_in_loop(MeshS *pM)
 #ifdef FOLLOW_CLOUD
         boost_frame(&(pM->Domain[nl][nd]), dvx);
 #endif
-#ifdef EXPAND_DOMAIN
-        expand_domain((&(pM->Domain[nl][nd])), new_scalefac / scalefac);
-#endif
       }
     }
   }
-#ifdef EXPAND_DOMAIN
-  vflow = vflow * pow(new_scalefac / scalefac, ed_exp_vx);
-  scalefac = new_scalefac;
-#endif
-
 
   for (nl=0; nl<=(pM->NLevels)-1; nl++) {
     for (nd=0; nd<=(pM->DomainsPerLevel[nl])-1; nd++) {
@@ -1175,7 +1110,7 @@ void Userwork_in_loop(MeshS *pM)
       }
     }
   }
-#if ENERGY_HEATING == 1
+#ifdef ENERGY_HEATING
   radiate_energy(pM);
 #endif
 
@@ -1207,7 +1142,6 @@ void Userwork_after_loop(MeshS *pM)
 /*==============================================================================
  * PHYSICS FUNCTIONS:
  * boost_frame()         - boost simulation frame by a velocity increment
- * expand_domain()       - expands domain by scalefactor
  * report_nans()         - apply a ceiling and floor to the temperature
  * cloud_velocity()      - find the mass-weighted velocity of the cloud.
  * nu_fun()              - kinematic viscosity (i.e., cm^2/s)
@@ -1241,69 +1175,12 @@ static void boost_frame(DomainS *pDomain, Real dvx)
     }
   }
 
-#ifdef EXPAND_DOMAIN
-  x_shift += (vflow0 * pow(scalefac, ed_exp_vx) - vflow) * pDomain->Grid->dt;
-#else
   //  x_shift -= dvx * pDomain->Grid->dt;
   x_shift -= vflow * pDomain->Grid->dt;
-#endif // EXPAND_DOMAIN
 
   return;
 }
 #endif  /* FOLLOW_CLOUD */
-
-
-#ifdef EXPAND_DOMAIN
-static void expand_domain(DomainS *pDomain, Real scale) {
-  int i, j, k;
-  int is,ie,js,je,ks,ke;
-  Real E0;
-  GridS *pGrid = pDomain->Grid;
-
-#ifdef MHD
-  ath_error("Not thought about scaling magnetic fields yet...");
-#endif
-
-  if(fabs(scale - 1.) > 1e-2)
-    ath_error("Scaling at one timestep is too big (%g).", scale);
-
-  is = pGrid->is; ie = pGrid->ie;
-  js = pGrid->js; je = pGrid->je;
-  ks = pGrid->ks; ke = pGrid->ke;
-
-  for (k=ks; k<=ke; k++) {
-    for (j=js; j<=je; j++) {
-      for (i=is; i<=ie; i++) {
-        E0 = pGrid->U[k][j][i].E - 0.5 * (SQR(pGrid->U[k][j][i].M1) +\
-                                          SQR(pGrid->U[k][j][i].M2) +\
-                                          SQR(pGrid->U[k][j][i].M3)) / pGrid->U[k][j][i].d;
-        pGrid->U[k][j][i].d *= pow(scale, ed_exp_rho);
-
-        pGrid->U[k][j][i].M1 *= pow(scale, ed_exp_rho + ed_exp_vx);
-        pGrid->U[k][j][i].M2 *= pow(scale, ed_exp_rho + ed_exp_vy);
-        pGrid->U[k][j][i].M3 *= pow(scale, ed_exp_rho + ed_exp_vz);
-
-        E0 = MAX(TINY_NUMBER, E0);
-        pGrid->U[k][j][i].E = E0 * pow(scale, ed_exp_pressure) +        \
-          0.5 * (SQR(pGrid->U[k][j][i].M1) +                            \
-                 SQR(pGrid->U[k][j][i].M2) +                            \
-                 SQR(pGrid->U[k][j][i].M3)) / pGrid->U[k][j][i].d;
-
-
-        /*
-        if((i == is) && ( k == ks) && (j == js)) {
-          printf("dens: %g, scalefac: %g, calc: %g, boundary: %g\n",
-                 pGrid->U[k][j][i].d, scalefac, pow(scalefac, -3),
-                 pGrid->U[k][j][i - 1].d);
-        }
-        */
-      }
-    }
-  }
-
-  return;
-}
-#endif // EXPAND_DOMAIN
 
 
 #ifdef REPORT_NANS
@@ -1561,83 +1438,52 @@ static int report_nans(MeshS *pM, DomainS *pDomain, int fix)
 
 static void init_cooling()
 {
-  int i, k, n=nfit_cool_T-1;
+  int k, n=nfit_cool-1;
   Real term;
   const Real mu = 0.62, mu_e = 1.17;
 
   /* convert T in the cooling function from keV to code units */
-  for (k=0; k<=n; k++) {
+  for (k=0; k<=n; k++)
     sdT[k] /= (8.197 * mu);
-    if(sdT[k] <= 0) ath_error("sdT[%d]=%e. Has to be > 0.", k, sdT[k]);
-  }
 
   if(tfloor_cooling < sdT[0])
-    ath_error("Cooling floor is smaller than first entry of cooling function (%e vs %e).",
-              tfloor_cooling, sdT[0]);
+    ath_error("Cooling floor is smaller than first entry of cooling function.");
 
   /* populate Yk following equation A6 in Townsend (2009) */
-  for(i = 0; i < nfit_cool_d; i++) {
-    Yk[i][n] = 0.0;
-    for (k=n-1; k>=0; k--){
-      if(sdL[i][k] <= 0) ath_error("sdL[%d][%d]=%e. Has to be > 0.", i, k, sdL[i][k]);
-      term = (sdL[i][n]/sdL[i][k]) * (sdT[k]/sdT[n]);
+  Yk[n] = 0.0;
+  for (k=n-1; k>=0; k--){
+    term = (sdL[n]/sdL[k]) * (sdT[k]/sdT[n]);
 
-      if (sdexpt[i][k] == 1.0)
-        term *= log(sdT[k]/sdT[k+1]);
-      else
-        term *= ((1.0 - pow(sdT[k]/sdT[k+1], sdexpt[i][k]-1.0)) / (1.0-sdexpt[i][k]));
+    if (sdexpt[k] == 1.0)
+      term *= log(sdT[k]/sdT[k+1]);
+    else
+      term *= ((1.0 - pow(sdT[k]/sdT[k+1], sdexpt[k]-1.0)) / (1.0-sdexpt[k]));
 
-      Yk[i][k] = Yk[i][k+1] - term;
+    Yk[k] = Yk[k+1] - term;
 
-      if(isnan(Yk[i][k]))
-        ath_error("Error initializing cooling. nan in Yk[%d][%d]", i, k);
-    }
+    if(isnan(Yk[k]))
+      ath_error("Error initializing cooling. nan in Yk[%d]", k);
   }
+
   return;
 }
 
 /* piecewise power-law fit to the cooling curve with temperature in
    keV and L in 1e-23 erg cm^3 / s */
-static Real sdLambda(const Real d0, const Real T)
+static Real sdLambda(const Real T)
 {
-  int iT, id; // bin indices for T,d
-  Real L1, L2;
-  const Real conv_fac = 1.311e-5; // from units of 1e-23 erg cm^3 /s to code units.
-  const Real d = d0 * dens_conv;
-  int interpolate = (nfit_cool_d > 1);
+  int k, n=nfit_cool-1;
 
   /* first find the temperature bin */
-  for(iT=nfit_cool_T-1; iT>=0; iT--){
-    if (T >= sdT[iT])
+  for(k=n; k>=0; k--){
+    if (T >= sdT[k])
       break;
-  }
-  assert(iT >= 0);
-
-  /* Find the density bin */
-  if(d <= sdd[0]) {
-    interpolate = 0;
-    id = 0;
-  } else if(d >= sdd[nfit_cool_d - 1]) {
-    interpolate = 0;
-    id = nfit_cool_d - 1;
-  } else {
-    for(id=nfit_cool_d - 1; id>=0; id--) {
-      if(d >= sdd[id])
-        break;
-    }
   }
 
   /* piecewise power-law; see equation A4 of Townsend (2009) */
-  L1 = conv_fac * sdL[id][iT] * pow(T/sdT[iT], sdexpt[id][iT]);
-
-  if(!interpolate) 
-    return L1;
-
-  L2 = conv_fac * sdL[id+1][iT] * pow(T/sdT[iT], sdexpt[id+1][iT]);
-
-  // Linear interpolation
-  return L1 + (L2 - L1) / (sdd[id+1] - sdd[id]) * d;
-
+  /* (factor of 1.311e-5 takes lambda from units of 1e-23 erg cm^3 /s
+     to code units.) */
+  return (1.311e-5 * sdL[k] * pow(T/sdT[k], sdexpt[k]));
 }
 
 static Real tcool(const Real d, const Real T)
@@ -1645,124 +1491,80 @@ static Real tcool(const Real d, const Real T)
   const Real mu = 0.62, mu_e = 1.17;
 
   /* equation 13 of Townsend (2009) */
-  return (SQR(mu_e) * T) / (Gamma_1 * d * sdLambda(d,T));
+  return (SQR(mu_e) * T) / (Gamma_1 * d * sdLambda(T));
 }
-
 
 /* see sdLambda() or equation A1 of Townsend (2009) for the
    definition */
-static Real Y(const Real T, const int id)
+static Real Y(const Real T)
 {
-  int iT;
-  int nT = nfit_cool_T - 1;
-  int nd = nfit_cool_d - 1;
+  int k, n=nfit_cool-1;
   Real term;
 
   /* first find the temperature bin */
-  for(iT=nT; iT>=0; iT--){
-    if (T >= sdT[iT])
+  for(k=n; k>=0; k--){
+    if (T >= sdT[k])
       break;
   }
 
   /* calculate Y using equation A5 in Townsend (2009) */
-  term = (sdL[id][nT]/sdL[id][iT]) * (sdT[iT]/sdT[nT]);
+  term = (sdL[n]/sdL[k]) * (sdT[k]/sdT[n]);
 
-  if (sdexpt[id][iT] == 1.0)
-    term *= log(sdT[iT]/T);
+  if (sdexpt[k] == 1.0)
+    term *= log(sdT[k]/T);
   else
-    term *= ((1.0 - pow(sdT[iT]/T, sdexpt[id][iT]-1.0)) / (1.0-sdexpt[id][iT]));
+    term *= ((1.0 - pow(sdT[k]/T, sdexpt[k]-1.0)) / (1.0-sdexpt[k]));
 
-  return (Yk[id][iT] + term);
+  return (Yk[k] + term);
 }
 
-
-static Real Yinv(const Real Y1, const int id) {
-  //int iT,id;
-  int nT = nfit_cool_T - 1;
-  int nd = nfit_cool_d - 1;
-  int iT;
+static Real Yinv(const Real Y1)
+{
+  int k, n=nfit_cool-1;
   Real term;
 
   /* find the bin i in which the final temperature will be */
-  for(iT=nT; iT>0; iT--){       // use iT>0 instead of iT>=0 to force min(iT)=0
-    if (Y(sdT[iT], id) >= Y1)   // this means that newT<sdT[0] are wrong
-      break;                    // but since we have Tfloor>sdT[0] we're good.
+  for(k=n; k>=0; k--){
+    if (Y(sdT[k]) >= Y1)
+      break;
   }
+
 
   /* calculate Yinv using equation A7 in Townsend (2009) */
-  term = (sdL[id][iT]/sdL[id][nT]) * (sdT[nT]/sdT[iT]);
-  term *= (Y1 - Yk[id][iT]);
+  term = (sdL[k]/sdL[n]) * (sdT[n]/sdT[k]);
+  term *= (Y1 - Yk[k]);
 
-  if (sdexpt[id][iT] == 1.0)
+  if (sdexpt[k] == 1.0)
     term = exp(-1.0*term);
   else{
-    term = pow(1.0 - (1.0-sdexpt[id][iT])*term,
-               1.0/(1.0-sdexpt[id][iT]));
+    term = pow(1.0 - (1.0-sdexpt[k])*term,
+               1.0/(1.0-sdexpt[k]));
   }
 
-
-  if(!isfinite(term)) {
-    ath_error("nan detected in Yinv (term=%e, Y1=%e).\n", term, Y1);
-  }
-
-  return (sdT[iT] * term);
+  return (sdT[k] * term);
 }
 
-
-static Real newtemp_townsend(const Real d0, const Real T, const Real dt_hydro)
+static Real newtemp_townsend(const Real d, const Real T, const Real dt_hydro)
 {
-  int id;
-  Real term1, Tref, dref;
-  Real T1, T2;
-  const Real d = d0 * dens_conv;
-  int interpolate = nfit_cool_d > 1;
+  Real term1, Tref;
+  int n=nfit_cool-1;
 
-  Tref = sdT[nfit_cool_T-1];
-  dref = sdd[nfit_cool_d-1] / dens_conv;
+  Tref = sdT[n];
 
-  /* Find the density bin */
-  if(d <= sdd[0]) {
-    interpolate = 0;
-    id = 0;
-  } else if(d >= sdd[nfit_cool_d - 1]) {
-    interpolate = 0;
-    id = nfit_cool_d - 1;
-  } else {
-    for(id=nfit_cool_d - 1; id>=0; id--) {
-      if(d >= sdd[id])
-        break;
-    }
-  }
-  assert(id>=0);
-  assert(id<nfit_cool_d);
+  term1 = (T/Tref) * (sdLambda(Tref)/sdLambda(T)) * (dt_hydro/tcool(d, T));
 
-  /* Calculate new T */
-  term1 = (T/Tref) * (sdLambda(d0, Tref)/sdLambda(d0, T)) * (dt_hydro/tcool(d0, T));
-  T1 = Yinv(Y(T,id) + term1, id);
-  if(isnan(T1)) {
-    printf("[newtemp] d=%.3e, id=%d, T=%.3e --> %.3e, dt_hydro=%e, tcool=%e, Tref=%e, sdLambda=%e, term1=%e, Y(T,id)=%e\n", d, id, T, T1,dt_hydro, tcool(d0,T),Tref, sdLambda(d0, T), term1, Y(T,id));
-    assert(!isnan(T1));
-  }
-  if(!interpolate)
-    return T1;
-
-  T2 = Yinv(Y(T,id+1) + term1, id+1);
-  assert(!isnan(T2));
-
-  /* Linear interpolation along density */
-  return T1 + (T2 - T1) / (sdd[id+1] - sdd[id]) * d;
+  return Yinv(Y(T) + term1);
 }
-
 
 static void integrate_cooling(GridS *pG)
 {
-  int i, j, k, iprint = 0;
+  int i, j, k;
   int is, ie, js, je, ks, ke;
 
   PrimS W;
   ConsS U;
   // Changed this for tfloor!!
-  Real temp, tempold, heat;
+  Real temp;
 
   /* ath_pout(0, "integrating cooling using Townsend (2009) algorithm.\n"); */
 
@@ -1778,10 +1580,9 @@ static void integrate_cooling(GridS *pG)
 
         /* find temp in keV */
         temp = W.P/W.d;
-        tempold = temp;
 
         /* do not cool above a certain threshold */
-        if( (tnotcool > 0) && (temp > tnotcool) )
+        if( (tnotcool > 0) && (temp > tnotcool) ) 
           continue;
 
         temp = newtemp_townsend(W.d, temp, pG->dt);
@@ -1807,7 +1608,7 @@ static void integrate_cooling(GridS *pG)
 }
 
 
-#if ENERGY_HEATING == 1
+#ifdef ENERGY_HEATING
 /*
   Radiate cooled energy over whole domain
  */
@@ -1889,35 +1690,21 @@ static void radiate_energy(MeshS *pM) {
 
 static void test_cooling()
 {
-  int i, j, npts=100;
+  int i, npts=100;
   Real logt, temp, tc, logdt, dt;
   Real err;
-  Real dens = 1.0;
 
   FILE *outfile;
 
-  /* this sometimes crashes, so let's try it */
-  newtemp_townsend(sdd[nfit_cool_d - 1] - 1e-4, 7.173e-04, 8.050312e-03);
-
-  /* Now outputting some information from Townsend (2009) */
   outfile = fopen("lambda.dat", "w");
   for(i=0; i<npts; i++){
     logt = log(1.0e-4) + (log(5.0)-log(1.0e-4))*((double) i/(npts-1));
     temp = exp(logt);
 
-    fprintf(outfile, "%e\t%e\t%e\n", temp, sdLambda(dens,temp), sdLambda(dens * drat,temp));
+    fprintf(outfile, "%e\t%e\n", temp, sdLambda(temp));
   }
   fclose(outfile);
 
-
-  outfile = fopen("Yk.dat", "w");
-  for(i=0; i<nfit_cool_T; i++) {
-    fprintf(outfile, "%d\t", i);
-    for(j = 0; j < nfit_cool_d; j++)
-      fprintf(outfile, "%e\t", Yk[j][i]);
-    fprintf(outfile, "\n");
-  }
-  fclose(outfile);
 
   temp = 10.0;
   tc = tcool(1.0, temp);
@@ -1926,9 +1713,9 @@ static void test_cooling()
   for(i=0; i<npts; i++){
     logdt = log(0.1) + (log(2.0)-log(0.1))*((double) i / (npts-1));
     dt = tc * exp(logdt);
+
     fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(1.0, temp, dt));
   }
-  fclose(outfile);
 
   temp = 3.0;
   tc = tcool(1.0, temp);
@@ -1940,7 +1727,6 @@ static void test_cooling()
 
     fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(1.0, temp, dt));
   }
-  fclose(outfile);
 
   temp = 1.0;
   tc = tcool(1.0, temp);
@@ -1952,7 +1738,6 @@ static void test_cooling()
 
     fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(1.0, temp, dt));
   }
-  fclose(outfile);
 
   temp = 0.3;
   tc = tcool(1.0, temp);
@@ -1964,11 +1749,9 @@ static void test_cooling()
 
     fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(1.0, temp, dt));
   }
-  fclose(outfile);
 
   temp = 0.1;
   tc = tcool(1.0, temp);
-
 
   outfile = fopen("townsend-fig1-0.1kev.dat", "w");
   for(i=0; i<npts; i++){
@@ -1977,22 +1760,9 @@ static void test_cooling()
 
     fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(1.0, temp, dt));
   }
-  fclose(outfile);
-
-  temp = 0.1;
-  tc = tcool(100.0, temp);
-
-  outfile = fopen("townsend-fig1-0.1kev-100.dat", "w");
-  for(i=0; i<npts; i++){
-    logdt = log(0.1) + (log(2.0)-log(0.1))*((double) i / (npts-1));
-    dt = tc * exp(logdt);
-
-    fprintf(outfile, "%e\t%e\n", dt/tc, newtemp_townsend(100.0, temp, dt));
-  }
-  fclose(outfile);
 
 
-  ath_error("check cooling stuff done.\n");
+  ath_error("check cooling stuff.\n");
 
   return;
 }
@@ -2171,66 +1941,49 @@ static Real nu_fun(const Real d, const Real T,
 
  *----------------------------------------------------------------------------*/
 
-static Real _hst_mcut(const GridS *pG, const int i, const int j, const int k, const Real frac)
+static Real _hst_mcut(GridS *pG, int i, int j, int k, const Real frac)
 {
-  if(pG->U[k][j][i].d < frac * drat * pow(scalefac, ed_exp_rho))
+  if(pG->U[k][j][i].d < frac * drat)
     return 0;
   return pG->U[k][j][i].d;
 }
 
 
-static Real hst_m13(const GridS *pG, const int i, const int j, const int k)
+static Real hst_m13(GridS *pG, int i, int j, int k)
 {
   return _hst_mcut(pG, i, j, k, 1/3.);
 }
 
-static Real hst_mT2(const GridS *pG, const int i, const int j, const int k)
-{
-  Real temp = get_pressure(&(pG->U[k][j][i])) / pG->U[k][j][i].d;
-  const Real Tcl = (Gamma_1 + dp) / drat;
-  if(temp > 2 * Tcl)
-    return 0;
-  return pG->U[k][j][i].d;
-}
-
-
-static Real hst_m110(const GridS *pG, const int i, const int j, const int k)
+static Real hst_m110(GridS *pG, int i, int j, int k)
 {
   return _hst_mcut(pG, i, j, k, 0.1);
 }
 
 
-static Real hst_Mx13(const GridS *pG, const int i, const int j, const int k)
+static Real hst_Mx13(GridS *pG, int i, int j, int k)
 {
-  if(pG->U[k][j][i].d < drat / 3. * pow(scalefac, ed_exp_rho))
+  if(pG->U[k][j][i].d < drat / 3.)
     return 0;
   return pG->U[k][j][i].M1;
 }
 
-static Real hst_Erad(const GridS *pG, const int i, const int j, const int k)
+static Real hst_Erad(GridS *pG, int i, int j, int k)
 {
   return pG->U[k][j][i].Erad;
 }
 
 
 #ifdef FOLLOW_CLOUD
-static Real hst_xshift(const GridS *pG, const int i, const int j, const int k)
+static Real hst_xshift(GridS *pG, int i, int j, int k)
 {
   return x_shift;
 }
 #endif
 
 #ifdef FOLLOW_CLOUD
-static Real hst_vflow(const GridS *pG, const int i, const int j, const int k)
+static Real hst_vflow(GridS *pG, int i, int j, int k)
 {
   return vflow;
-}
-#endif
-
-#ifdef EXPAND_DOMAIN
-static Real hst_scalefac(const GridS *pG, const int i, const int j, const int k)
-{
-  return scalefac;
 }
 #endif
 
@@ -2377,10 +2130,7 @@ static void bc_ix1(GridS *pGrid)
 #else
         vx = vflow;
         rho = 1.0;
-#endif /* FLOW_PROFILE */
-#ifdef EXPAND_DOMAIN
-        rho *= pow(scalefac, ed_exp_rho);
-#endif /* EXPAND_DOMAIN */
+#endif
         pGrid->U[k][j][is-i].d  = rho;
         pGrid->U[k][j][is-i].M1 = rho * vx;
         pGrid->U[k][j][is-i].M2 = rho * vy;
@@ -2391,9 +2141,6 @@ static void bc_ix1(GridS *pGrid)
         pGrid->U[k][j][is-i].E = flow_profile_pressure(cx1, x2, x3) / Gamma_1;
 #else
         pGrid->U[k][j][is-i].E = 1.0 + dp / Gamma_1 ;
-#ifdef EXPAND_DOMAIN
-        pGrid->U[k][j][is-i].E *= pow(scalefac, ed_exp_pressure);
-#endif // EXPAND_DOMAIN
 #endif /* FLOW_PROFILE */
         pGrid->U[k][j][is-i].E += 0.5 * rho * (SQR(vx) + SQR(vy) + SQR(vz));
 #endif  /* ISOTHERMAL */
@@ -2412,7 +2159,7 @@ static void bc_ix1(GridS *pGrid)
       }
     }
   } // End loop over grid cells
-  //ath_pout(0, "[bc_ix1] rho = %.5e, scalefac = %.5e\n", rho, scalefac);
+
 
 #ifdef MHD
 /* B1i is not set at i=is-nghost */
@@ -2776,4 +2523,3 @@ void add_new_particles(MeshS *pM) {
 }
 
 #endif /* PARTICLES */
-

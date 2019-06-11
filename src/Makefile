@@ -35,12 +35,11 @@ CORE_OBJ = ath_array.o \
            restart.o \
            show_config.o \
 	   smr.o \
-	   units.o \
            utils.o
 
 FFT_OBJ =
 ifeq (NO_FFT,FFT_ENABLED)
-ifeq (MPI_PARALLEL,MPI_PARALLEL)
+ifeq (NO_MPI_PARALLEL,MPI_PARALLEL)
    FFT_OBJ = fftsrc/factor.o \
              fftsrc/fft_2d.o \
              fftsrc/fft_3d.o \
@@ -75,8 +74,6 @@ GRAVITY_OBJ = gravity/bvals_grav.o \
 MICROPHYS_OBJ = microphysics/conduction.o \
 		microphysics/cool.o \
 		microphysics/integrate_diffusion.o \
-		microphysics/integrate_cooling.o \
-		microphysics/cool_solver.o \
 		microphysics/get_eta.o \
 	        microphysics/new_dt_diff.o \
                 microphysics/resistivity.o \
@@ -95,8 +92,7 @@ RECONSTRUCTION_OBJ = reconstruction/esystem_prim.o \
 		     reconstruction/lr_states_plm.o \
 		     reconstruction/lr_states_ppm.o \
 		     reconstruction/lr_states_prim2.o \
-		     reconstruction/lr_states_prim3.o \
-		     reconstruction/lr_states_p3c.o
+		     reconstruction/lr_states_prim3.o
 
 RSOLVERS_OBJ = rsolvers/esystem_roe.o \
 	       rsolvers/exact.o \
@@ -111,7 +107,14 @@ RSOLVERS_OBJ = rsolvers/esystem_roe.o \
 	       rsolvers/roe.o \
 	       rsolvers/two_shock.o
 
-ALL_OBJ = ${CORE_OBJ} ${FFT_OBJ} ${GRAVITY_OBJ} ${INTEGRATORS_OBJ} ${MICROPHYS_OBJ} ${PARTICLES_OBJ} ${RECONSTRUCTION_OBJ} ${RSOLVERS_OBJ}
+ifeq (,"")
+OTHER_OBJS =
+else
+OTHER_OBJS = flow_profile.c
+endif
+
+
+ALL_OBJ = ${CORE_OBJ} ${FFT_OBJ} ${GRAVITY_OBJ} ${INTEGRATORS_OBJ} ${MICROPHYS_OBJ} ${PARTICLES_OBJ} ${RECONSTRUCTION_OBJ} ${RSOLVERS_OBJ} prob/flow_profile/cc85_fit.c
 
 #-------------------  macro definitions  ---------------------------------------
 
